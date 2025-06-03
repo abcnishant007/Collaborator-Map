@@ -131,6 +131,7 @@ Enter your Google Scholar user ID: AiujSOkAAAAJ
 ```
 
 
-Important: The scholarly client has some issues when installed using the pip installation
-pip install git+https://github.com/OrganicIrradiation/scholarly.git
 ---
+
+**Important**: The scholarly client has some issues when installed using the pip installation
+pip install git+https://github.com/OrganicIrradiation/scholarly.git
