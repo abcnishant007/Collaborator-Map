@@ -1,0 +1,9 @@
+serpapi==0.1.5
+accelerate==1.7.0
+requests
+beautifulsoup4
+serpapi
+geopy
+folium
+transformers
+torch
