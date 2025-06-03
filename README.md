@@ -1,10 +1,7 @@
 
-# 🧠 ScholarAffiliationMapper
+# Collaborator-Map
+Simple Agentic AI to determine the current affiliations of one's research colleagues 
 
-**ScholarAffiliationMapper** is a Python-based academic tool that helps you:
-- Fetch coauthors from a Google Scholar profile
-- Use AI (via DeepSeek running locally or remotely through Ollama) to infer their current institutional affiliations
-- Map their locations globally using geolocation and Folium
 
 ## 🚀 Features
 
