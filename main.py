@@ -1,16 +1,14 @@
-import sys
+import time
+
 from smartprint import smartprint as sprint
 
 import config
+from agent import resolve_affiliation_with_agent
 from scholar_tools import (
     validate_and_get_papers,
-    get_unique_coauthors,
     search_affiliation_snippets,
-    geolocate_affiliation,
     create_map
 )
-from agent import resolve_affiliation_with_agent
-import time
 
 SERPAPI_CALL_LIMIT = config.SERPAPI_CALL_LIMIT
 
