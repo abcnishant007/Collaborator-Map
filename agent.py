@@ -1,7 +1,17 @@
 import requests
+import config
 
-OLLAMA_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "deepseek-r1:7b"
+#
+if config.RUNNING_ON_SERVER:
+    # implying that this tunnel has been created
+    # ssh -L 8080:localhost:11434 username@server.sg
+    OLLAMA_URL = "http://localhost:8080/api/generate"
+    OLLAMA_MODEL = "deepseek-r1:7b"
+elif not config.RUNNING_ON_SERVER:
+    OLLAMA_URL = "http://localhost:11434/api/generate"
+    OLLAMA_MODEL = "deepseek-r1:7b"
+else:
+    raise Exception("Wrong configuration; RUNNING_ON_SERVER")
 
 def call_deepseek(prompt, model=OLLAMA_MODEL):
     response = requests.post(
@@ -15,10 +25,13 @@ def call_deepseek(prompt, model=OLLAMA_MODEL):
     result = response.json()
     return result.get("response", "").strip()
 
-def resolve_affiliation_with_agent(name, search_snippets, field="computer science"):
+def resolve_affiliation_with_agent(name, search_snippets, field="computer science", email_hint=None):
+
+    if email_hint:
+        email_prompt = " Use this verified email domain as a strong hint: {email_hint}"
     prompt = f"""You are an academic assistant.
 
-    Given the following name and search result snippets, infer the most likely *current* institutional affiliation of the person. If there are 
+    Given the following name and search result snippets, infer the most likely *current* or the latest institutional affiliation of the person. If there are 
     several people with the same name, then check for those who are researchers, since I am interested only in the researchers. 
 
     Name: {name}
@@ -26,8 +39,13 @@ def resolve_affiliation_with_agent(name, search_snippets, field="computer scienc
     Search Results:
     """ + "\n".join([f"{i + 1}. {s}" for i, s in enumerate(search_snippets)]) + """
 
-    Give your answer clearly as:
-
+    When deciding upon between multiple options, look for the most senior position held. For instance a PhD Student at MIT might now be a lecturer at XY University, so
+    it is highly likely that the current affiliation is XY University. Similarly, if there are three instances of the information, Post doc at ETH Zurich, PhD Student at IIT Bombay
+    and assistant professor at NUS, then the latest affiliation is most likely NUS. 
+    
+    Very important: Give your answer clearly as the format shown below. Ensure that only the University or the institute name is present here; not the post or academic rank etc...
+    
+    
     Affiliation: <Your Answer Here>
     """
     print("🧠 Prompt sent to DeepSeek via Ollama:\n", prompt)

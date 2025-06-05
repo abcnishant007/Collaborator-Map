@@ -1,3 +1,7 @@
+import sys
+from smartprint import smartprint as sprint
+
+import config
 from scholar_tools import (
     validate_and_get_papers,
     get_unique_coauthors,
@@ -8,32 +12,56 @@ from scholar_tools import (
 from agent import resolve_affiliation_with_agent
 import time
 
-SERPAPI_CALL_LIMIT = 15
+SERPAPI_CALL_LIMIT = config.SERPAPI_CALL_LIMIT
 
 if __name__ == "__main__":
     scholar_user_id = input("Enter your Google Scholar user ID (e.g., AiujSOkAAAAJ): ").strip()
-    papers, error = validate_and_get_papers(scholar_user_id)
+
+    # Updated: Expect email_domain from function
+    papers, author_name, email_domain, error = validate_and_get_papers(scholar_user_id)
 
     if error:
         print("Error:", error)
         exit(1)
 
-    coauthors = get_unique_coauthors(papers)
-    limited_coauthors = coauthors[:SERPAPI_CALL_LIMIT]
+    already_processed_authors = {}
 
-    author_affiliations = []
-    for author in limited_coauthors:
-        print(f"\n🔍 Searching for {author}...")
-        snippets = search_affiliation_snippets(author)
-        if not snippets:
-            affiliation = "Unknown"
-        else:
-            affiliation = resolve_affiliation_with_agent(author, snippets)
-        print(f"✅ {author} likely affiliation: {affiliation}")
-        author_affiliations.append({"name": author, "affiliation": affiliation})
-        time.sleep(2)
+    author_affiliations_list_of_KV_pairs = []
+    for paper in papers:
+        print(paper['title'])
+
+        for author in paper['authors']:
+            if author not in already_processed_authors:
+                sprint(len(already_processed_authors))
+                if len(already_processed_authors) > config.SERPAPI_CALL_LIMIT:
+                    sprint (len(already_processed_authors))
+                    print ("Maximum number of queries reached; Check SERPAPI_CALL_LIMIT in config file")
+                    continue
+
+                searchword = author + "  " + paper['title'] + " google scholar "
+                print(searchword)
+
+                # search_affiliation_snippets (searchword)
+                # already_processed_authors[author] = "Processed"
+
+                snippets = search_affiliation_snippets(author)
+
+                if not snippets:
+                    affiliation = "Unknown"
+                else:
+                    # ✅ Use email domain as a hint if available
+                    affiliation = resolve_affiliation_with_agent(
+                        author,
+                        snippets,
+                        email_hint=None
+                    )
+
+                print(f"✅ {author} likely affiliation: {affiliation}")
+                already_processed_authors[author] = affiliation
+                author_affiliations_list_of_KV_pairs.append({"author": author, "affiliation": affiliation})
+                time.sleep(2)
 
     print("\n🗺️ Generating collaborator map...")
-    map_obj = create_map(author_affiliations)
+    map_obj = create_map(author_affiliations_list_of_KV_pairs)
     map_obj.save("output/collaborator_map.html")
     print("✅ Map saved to output/collaborator_map.html")

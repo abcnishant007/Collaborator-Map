@@ -1,9 +1,10 @@
 serpapi==0.1.5
 accelerate==1.7.0
-requests
-beautifulsoup4
-serpapi
-geopy
-folium
-transformers
-torch
+requests==2.31.0
+beautifulsoup4==4.12.3
+geopy==2.4.1
+folium==0.16.0
+transformers==4.41.1
+torch==2.3.0
+ollama==0.5.1
+git+https://github.com/OrganicIrradiation/scholarly.git@9269ff36ad2314e6cc0c5b499efc3b79b844707e
