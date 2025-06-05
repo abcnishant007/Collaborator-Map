@@ -39,11 +39,18 @@ def resolve_affiliation_with_agent(name, search_snippets, field="computer scienc
     Search Results:
     """ + "\n".join([f"{i + 1}. {s}" for i, s in enumerate(search_snippets)]) + """
 
-    When deciding upon between multiple options, look for the most senior position held. For instance a PhD Student at MIT might now be a lecturer at XY University, so
-    it is highly likely that the current affiliation is XY University. Similarly, if there are three instances of the information, Post doc at ETH Zurich, PhD Student at IIT Bombay
-    and assistant professor at NUS, then the latest affiliation is most likely NUS. 
     
-    Very important: Give your answer clearly as the format shown below. Ensure that only the University or the institute name is present here; not the post or academic rank etc...
+    Most of the times it is the first line of the search result that has the most relevant information. 
+    At other times, it might be a bit confusing. Then you need to use your best judgement.
+     
+    For instance, here is a common problem listed under HINT. 
+    
+    HINT: When the choice is confusing regarding the timeline,for instance, if the grammar is not correct and all of the last 3 affiliations are 
+    written in present tense, then to decide upon between multiple options, look for the most senior position held. For instance a PhD Student at MIT might now be a lecturer at XY University, so     it is highly likely that the current affiliation is XY University. Similarly, if there are three instances of the information, Post doc at ETH Zurich, PhD Student at IIT Bombay and assistant professor at NUS, then the latest affiliation is most likely NUS.
+    REMEMEBER: PhD Student or Doctoral Student is less senior than post doctoral researcher or research associate;  post doctoral researcher or research associate is less senior than assistant professor. 
+ 
+    
+    VERY IMPORTANT: for the FINAL ANSWER: Give your answer clearly as the format shown below. Ensure that only the University or the institute name is present here; not the post or academic rank etc...
     
     
     Affiliation: <Your Answer Here>
