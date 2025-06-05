@@ -1,5 +1,5 @@
 RUNNING_ON_SERVER = True
-SERPAPI_CALL_LIMIT = 5
+SERPAPI_CALL_LIMIT = 2
 
 PICKLE_PROTOCOL = 4  # or 5 if you're using Python 3.8+
 

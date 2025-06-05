@@ -354,7 +354,7 @@ def create_map(author_affiliations):
         affiliation = item["affiliation"]
         loc = geolocate_affiliation(affiliation)
         if loc:
-            logo_url = get_institution_logo_brute_force(affiliation)
+            logo_url = get_institution_logo_brute_force(affiliation)[0]
             if logo_url:
                 icon = folium.CustomIcon(
                     logo_url,
@@ -363,15 +363,15 @@ def create_map(author_affiliations):
                 folium.Marker(
                     location=loc,
                     icon=icon,
-                    popup=f"{item['name']}: {affiliation}",
-                    tooltip=item['name']
+                    popup=f"{item['author']}: {affiliation}",
+                    tooltip=item['author']
                 ).add_to(m)
             else:
                 # Fallback to default marker if logo not found
                 folium.Marker(
                     location=loc,
-                    popup=f"{item['name']}: {affiliation}",
-                    tooltip=item['name']
+                    popup=f"{item['author']}: {affiliation}",
+                    tooltip=item['author']
                 ).add_to(m)
         time.sleep(1)
     os.makedirs("output", exist_ok=True)
