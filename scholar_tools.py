@@ -9,18 +9,47 @@ import config
 
 geolocator = Nominatim(user_agent="affiliation_mapper")
 
-import requests
+def get_or_fetch_logo(institution_name):
+    slug = slugify(institution_name)
+    remote_filename = f"{slug}.png"
 
+    # Step 1: Try fetching from server
+    try:
+        print(f"🌐 Checking cache for {remote_filename}")
+        r = requests.get(f"{BASE_URL}/logo/{remote_filename}", headers=HEADERS)
+        if r.status_code == 200:
+            print(f"✅ Fetched cached logo: {remote_filename}")
+            return f"{BASE_URL}/logo/{remote_filename}", r.content
+        else:
+            print(f"❌ Cache miss: {r.status_code}")
+    except Exception as e:
+        print(f"⚠️ Error checking logo cache: {e}")
 
-import requests
+    # Step 2: Use brute-force fallback
+    logo_url, image_bytes = get_institution_logo_brute_force(institution_name)
+    if not logo_url or not image_bytes:
+        print("❌ Brute-force method failed.")
+        return None, None
 
-import requests
+    # Step 3: Upload to server
+    try:
+        print(f"📤 Uploading {remote_filename} to logo API")
+        files = {"file": (remote_filename, image_bytes, "image/png")}
+        data = {"name": remote_filename}
+        upload_res = requests.post(f"{BASE_URL}/upload", headers=HEADERS, files=files, data=data)
+        if upload_res.ok:
+            print("✅ Uploaded logo to cache.")
+        else:
+            print(f"⚠️ Upload failed: {upload_res.status_code}, {upload_res.text}")
+    except Exception as e:
+        print(f"❌ Error uploading to logo API: {e}")
+
+    return logo_url, image_bytes
 
 def get_institution_logo_brute_force(institution_name):
     import requests
     import re
     from bs4 import BeautifulSoup
-    from urllib.parse import quote
     from agent import call_deepseek
 
     session = requests.Session()
@@ -29,27 +58,19 @@ def get_institution_logo_brute_force(institution_name):
     def extract_image_urls_from_html(html):
         soup = BeautifulSoup(html, "html.parser")
         image_urls = set()
-
-        # Extract og:image meta tags
         for meta in soup.find_all("meta", {"property": "og:image"}):
             content = meta.get("content")
             if content and "upload.wikimedia" in content:
                 image_urls.add(content if content.startswith("http") else f"https:{content}")
-
-        # Extract all <img> tags pointing to upload.wikimedia
         for img in soup.find_all("img"):
             src = img.get("src")
             if src and "upload.wikimedia" in src:
                 image_urls.add(src if src.startswith("http") else f"https:{src}")
-
-        # Prioritize SVGs first
-        image_urls = list(image_urls)
-        image_urls = [x for x in list(image_urls) if "logo" in x]
+        image_urls = [x for x in image_urls if "logo" in x]
         svg_urls = [url for url in image_urls if url.lower().endswith(".svg")]
         raster_urls = [url for url in image_urls if not url.lower().endswith(".svg")]
         return svg_urls + raster_urls
 
-    # Step 1: Get Wikipedia page title
     search_res = session.get(base_url, params={
         "action": "query",
         "list": "search",
@@ -58,136 +79,69 @@ def get_institution_logo_brute_force(institution_name):
     }).json()
     search_results = search_res.get("query", {}).get("search", [])
     if not search_results:
-        print("⚠️ No search results found for institution:", institution_name)
         return None, None
 
     page_title = search_results[0]["title"]
     wiki_link = f"https://en.wikipedia.org/wiki/{page_title.replace(' ', '_')}"
 
-    # Step 2: Fetch HTML and extract images
     try:
         html = session.get(wiki_link, headers={"User-Agent": "Mozilla/5.0"}).text
     except Exception as e:
         print("⚠️ HTML fetch failed:", e)
-        return None, wiki_link
-
-    image_urls = extract_image_urls_from_html(html)
-
-    if not image_urls:
-        print("⚠️ No image URLs found in HTML.")
-        return None, wiki_link
-
-    # Step 3: Ask AI to select the best logo
-    prompt = (
-        "You are an assistant helping choose official university logos from Wikipedia pages.\\n\\n"
-        f"Institution: {institution_name}\\n\\n"
-        "Here are image URLs found in the page:\\n" +
-        "\\n".join(f"{i}. {url}" for i, url in enumerate(image_urls)) +
-        "\\n\\nPlease respond with the correct URL in your opinion. DO NOT MAKE YOUR own URL. "
-        "CHoose the one URL which makes the most sense as the logo from the provided list. "
-        "Please respond with only one line, like: "
-        ""
-        "Best Logo URL: <your chosen URL from the list>"
-
-
-
-    )
-    print("🧠 Prompt to AI:\\n", prompt)
-
-    response = call_deepseek(prompt)
-
-    # print ("AI response: ", response)
-    # # match = re.search(r"Best Logo URL:\\s*(https?://\\S+)", response)
-    # try:
-    #     photolink = "https://" + response.split("https://")[1].split("\*\*")[0]
-    #     return photolink, wiki_link
-    # except:
-    #     print("⚠️ AI failed to extract a valid logo URL.")
-    #     if response.strip() == "-1":
-    #         return None, wiki_link
-    #     return None, wiki_link
-    # # # if match:
-    # #     return match.group(1).strip(), wiki_link
-    #
-    #
-    # return photolink, wiki_link
-
-    # Try robustly extracting the first valid Wikimedia URL from the AI's response
-    matches = re.findall(r"https?://upload\.wikimedia\.org[^\s*]+", response)
-    if matches:
-        return matches[0].strip(), wiki_link
-
-def get_institution_logo_brute_force_1(institution_name):
-    import requests
-    import re
-    from urllib.parse import quote
-    from agent import call_deepseek
-
-    session = requests.Session()
-    base_url = "https://en.wikipedia.org/w/api.php"
-
-    def extract_image_urls_from_html(html):
-        # Extract <meta property="og:image"> and Wikimedia-hosted <img src="...">
-        urls = re.findall(r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"', html)
-        urls += re.findall(r'<img[^>]+src="([^"]+upload\\.wikimedia[^"]+)"', html)
-
-        # Normalize protocol-relative URLs (e.g. //upload...)
-        urls = [
-            url if url.startswith("http") else f"https:{url}"
-            for url in urls
-            if "upload.wikimedia" in url
-        ]
-
-        # Prioritize vector (SVG) first, fallback to PNG/JPG
-        svg_urls = [url for url in urls if url.lower().endswith(".svg")]
-        raster_urls = [url for url in urls if not url.lower().endswith(".svg")]
-        return svg_urls + raster_urls
-
-    # Step 1: Get Wikipedia page title
-    search_res = session.get(base_url, params={
-        "action": "query",
-        "list": "search",
-        "srsearch": institution_name,
-        "format": "json"
-    }).json()
-    search_results = search_res.get("query", {}).get("search", [])
-    if not search_results:
-        print("⚠️ No search results found for institution:", institution_name)
         return None, None
 
-    page_title = search_results[0]["title"]
-    wiki_link = f"https://en.wikipedia.org/wiki/{page_title.replace(' ', '_')}"
-
-    # Step 2: Fetch HTML and extract images
-    try:
-        html = requests.get(wiki_link, headers={"User-Agent": "Mozilla/5.0"}).text
-    except Exception as e:
-        print("⚠️ HTML fetch failed:", e)
-        return None, wiki_link
-
     image_urls = extract_image_urls_from_html(html)
-
     if not image_urls:
-        print("⚠️ No image URLs found in HTML.")
-        return None, wiki_link
+        return None, None
 
-    # Step 3: Ask AI to select the best logo
     prompt = (
         "You are an assistant helping choose official university logos from Wikipedia pages.\n\n"
         f"Institution: {institution_name}\n\n"
         "Here are image URLs found in the page:\n" +
-        "\n".join(f"{i+1}. {url}" for i, url in enumerate(image_urls)) +
-        "\n\nPlease respond with the best logo.\nBest Logo URL:"
+        "\n".join(f"{i}. {url}" for i, url in enumerate(image_urls)) +
+        "\n\nPlease respond with the correct URL in your opinion. DO NOT MAKE YOUR own URL. "
+        "Choose the one URL which makes the most sense as the logo from the provided list. "
+        "Please respond with only one line, like: Best Logo URL: <your chosen URL from the list>"
     )
-    print("🧠 Prompt to AI:\n", prompt)
 
     response = call_deepseek(prompt)
-    match = re.search(r"Best Logo URL:\s*(https?://\S+)", response)
-    if match:
-        return match.group(1).strip(), wiki_link
+    matches = re.findall(r"https?://upload\.wikimedia\.org[^\s*]+", response)
+    if not matches:
+        return None, None
 
-    print("⚠️ AI failed to extract a valid logo URL.")
-    return None, wiki_link
+    logo_url = matches[0].strip()
+
+    try:
+        img_res = requests.get(logo_url, headers={"User-Agent": "Mozilla/5.0"})
+        if img_res.status_code == 200:
+            return logo_url, img_res.content
+        else:
+            return logo_url, None
+    except Exception as e:
+        print(f"⚠️ Failed to download selected logo: {e}")
+        return logo_url, None
+
+import requests
+from slugify import slugify
+from pathlib import Path
+import subprocess
+# from your_module import get_institution_logo_brute_force  # replace with actual import
+
+API_KEY = config.PYTHONANWYWHERE_API_KEY
+BASE_URL = "https://lifezbeautiful.pythonanywhere.com"
+HEADERS = {"X-API-Key": API_KEY}
+TMP_DIR = Path("tmp_logos")
+TMP_DIR.mkdir(exist_ok=True)
+
+def download_with_curl(url, output_path):
+    try:
+        subprocess.run([
+            "curl", "-L", "-A", "Mozilla/5.0", url, "--output", str(output_path)
+        ], check=True)
+        return output_path.exists() and output_path.stat().st_size > 0
+    except subprocess.CalledProcessError as e:
+        print(f"❌ curl failed: {e}")
+        return False
 
 
 
@@ -345,35 +299,77 @@ import folium
 import os
 import time
 
+import os
+import time
+import folium
+
+from PIL import Image
+from io import BytesIO
+import base64
+import folium
+
+def get_icon_with_aspect_ratio(image_bytes, target_height=50):
+    """
+    Takes raw image bytes and returns a folium.CustomIcon object
+    scaled to the target height while preserving aspect ratio.
+    """
+    image = Image.open(BytesIO(image_bytes))
+    width, height = image.size
+    aspect_ratio = width / height
+    new_width = int(target_height * aspect_ratio)
+
+    # Re-encode the image as PNG in memory
+    buffer = BytesIO()
+    image.convert("RGBA").save(buffer, format="PNG")
+    encoded = base64.b64encode(buffer.getvalue()).decode()
+    data_url = f"data:image/png;base64,{encoded}"
+
+    return folium.CustomIcon(
+        icon_image=data_url,
+        icon_size=(new_width, target_height)
+    )
+
 def create_map(author_affiliations):
     """
     Creates a folium map with custom markers using institution logos.
+    Returns the folium.Map object.
     """
     m = folium.Map(location=[20, 0], zoom_start=2)
+
     for item in author_affiliations:
         affiliation = item["affiliation"]
         loc = geolocate_affiliation(affiliation)
+
         if loc:
-            logo_url = get_institution_logo_brute_force(affiliation)[0]
-            if logo_url:
-                icon = folium.CustomIcon(
-                    logo_url,
-                    icon_size=(50, 50)
-                )
-                folium.Marker(
-                    location=loc,
-                    icon=icon,
-                    popup=f"{item['author']}: {affiliation}",
-                    tooltip=item['author']
-                ).add_to(m)
+            logo_url, logo_bytes = get_or_fetch_logo(affiliation)  # expects tuple return
+
+            if logo_bytes:
+                try:
+                    icon = get_icon_with_aspect_ratio(logo_bytes)
+                    folium.Marker(
+                        location=loc,
+                        icon=icon,
+                        popup=f"{item['author']}: {affiliation}",
+                        tooltip=item['author']
+                    ).add_to(m)
+                except Exception as e:
+                    print(f"⚠️ Failed to render logo for {affiliation}: {e}")
+                    # fallback marker
+                    folium.Marker(
+                        location=loc,
+                        popup=f"{item['author']}: {affiliation}",
+                        tooltip=item['author']
+                    ).add_to(m)
             else:
-                # Fallback to default marker if logo not found
+                # fallback marker
                 folium.Marker(
                     location=loc,
                     popup=f"{item['author']}: {affiliation}",
                     tooltip=item['author']
                 ).add_to(m)
+
         time.sleep(1)
+
     os.makedirs("output", exist_ok=True)
     return m
 
@@ -385,6 +381,8 @@ if __name__ == "__main__":
     # print(get_institution_logo_and_link_AI("MIT USA"))
     # print(get_institution_logo_and_link_AI("Tel aviv_ University"))
     print ("=========================================================")
-    print(get_institution_logo_brute_force("MIT USA"))
-    print(get_institution_logo_brute_force("Tel aviv_ University"))
+    # print(get_institution_logo_brute_force("MIT USA"))
+    # print(get_institution_logo_brute_force("Tel aviv_ University"))
+    # print ("=========================================================")
+    print (get_or_fetch_logo("TEl aviv_ University"))
 

@@ -12,8 +12,41 @@ from scholar_tools import (
 
 SERPAPI_CALL_LIMIT = config.SERPAPI_CALL_LIMIT
 
+
+import threading
+import queue
+
+def timed_input(prompt, timeout=10):
+    result_queue = queue.Queue()
+
+    def ask():
+        user_input = input(prompt).strip()
+        result_queue.put(user_input)
+
+    thread = threading.Thread(target=ask)
+    thread.daemon = True
+    thread.start()
+
+    try:
+        user_input = result_queue.get(timeout=timeout)
+        return user_input
+    except queue.Empty:
+        print("\n⏰ No valid Google Scholar input received.")
+        return None
+
+
+
+
+
 if __name__ == "__main__":
-    scholar_user_id = input("Enter your Google Scholar user ID (e.g., AiujSOkAAAAJ): ").strip()
+    # Call it
+    scholar_user_id = timed_input("Enter your Google Scholar user ID (e.g., AiujSOkAAAAJ): ", timeout=10)
+
+    # Fallback behavior
+    if not scholar_user_id:
+        print("⚠️ Proceeding with fallback: creating graph for the repository author.")
+        # e.g., author_name = "YourRepoOwnerName"
+        scholar_user_id = "AiujSOkAAAAJ"
 
     # Updated: Expect email_domain from function
     papers, author_name, email_domain, error = validate_and_get_papers(scholar_user_id)

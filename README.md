@@ -135,3 +135,8 @@ Enter your Google Scholar user ID: AiujSOkAAAAJ
 
 **Important**: The scholarly client has some issues when installed using the pip installation
 pip install git+https://github.com/OrganicIrradiation/scholarly.git
+
+
+
+curl -X DELETE https://lifezbeautiful.pythonanywhere.com/delete/massachusetts-institute-of-technology.png \
+  -H "X-API-Key: SECRETKEY"
