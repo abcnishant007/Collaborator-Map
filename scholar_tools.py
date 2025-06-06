@@ -1,12 +1,29 @@
 import http.client
 import json
 import pickle
-
+import config
+from slugify import slugify
+from pathlib import Path
+import subprocess
+import requests
 from geopy.geocoders import Nominatim
 from scholarly import scholarly
-
+from PIL import Image
+from io import BytesIO
+import base64
 import config
+import folium
+import os
+import time
+import os
+from typing import Optional, Dict, List
+from config import HUMAN_IN_LOOP
 
+BASE_URL = "https://lifezbeautiful.pythonanywhere.com"
+HEADERS = {"X-API-Key": config.PYTHONANWYWHERE_API_KEY}
+TMP_DIR = Path("tmp_logos")
+TMP_DIR.mkdir(exist_ok=True)
+CACHE_FILE = "institution_cache.pkl"
 geolocator = Nominatim(user_agent="affiliation_mapper")
 
 def get_or_fetch_logo(institution_name):
@@ -121,18 +138,6 @@ def get_institution_logo_brute_force(institution_name):
         print(f"⚠️ Failed to download selected logo: {e}")
         return logo_url, None
 
-import requests
-from slugify import slugify
-from pathlib import Path
-import subprocess
-# from your_module import get_institution_logo_brute_force  # replace with actual import
-
-API_KEY = config.PYTHONANWYWHERE_API_KEY
-BASE_URL = "https://lifezbeautiful.pythonanywhere.com"
-HEADERS = {"X-API-Key": API_KEY}
-TMP_DIR = Path("tmp_logos")
-TMP_DIR.mkdir(exist_ok=True)
-
 def download_with_curl(url, output_path):
     try:
         subprocess.run([
@@ -142,8 +147,6 @@ def download_with_curl(url, output_path):
     except subprocess.CalledProcessError as e:
         print(f"❌ curl failed: {e}")
         return False
-
-
 
 def get_institution_logo_and_link_no_AI(institution_name):
     session = requests.Session()
@@ -212,7 +215,6 @@ def get_institution_logo_and_link_no_AI(institution_name):
 
     return None, wiki_link
 
-
 def validate_and_get_papers(user_id):
     try:
         try:
@@ -233,7 +235,6 @@ def validate_and_get_papers(user_id):
     except Exception as e:
         return None, None, None, f"Error fetching profile: {e}"
 
-
 def get_unique_coauthors(papers, owner_name=None):
     authors = set()
     for paper in papers:
@@ -241,11 +242,6 @@ def get_unique_coauthors(papers, owner_name=None):
             if author != owner_name:
                 authors.add(author)
     return list(authors)
-
-
-
-
-CACHE_FILE = "institution_cache.pkl"
 
 def load_cache():
     if os.path.exists(CACHE_FILE):
@@ -257,11 +253,148 @@ def save_cache(cache):
     with open(CACHE_FILE, "wb") as f:
         pickle.dump(cache, f, protocol=config.PICKLE_PROTOCOL)
 
+def find_scholar_profile(name: str, paper_title: str = None) -> str | None:
+    query = f'"{name}" site:scholar.google.com'
+    if paper_title:
+        query += f' "{paper_title}"'
+
+    url = "https://www.googleapis.com/customsearch/v1"
+    params = {
+        'key': config.API_FOR_GOOGLE_CUSTOM_SEARCH,
+        'cx': config.CX_FOR_GOOGLE_CUSTOM_SEARCH,
+        'q': query,
+        'num': 3
+    }
+
+    try:
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        data = response.json()
+
+        for item in data.get("items", []):
+            link = item.get("link", "")
+            if "scholar.google.com/citations?user=" in link:
+                return link  # first profile found
+
+    except Exception as e:
+        print(f"❌ Error searching for scholar profile of {name}: {e}")
+
+    return None
+
+from playwright.sync_api import sync_playwright
+
+def extract_verified_email(profile_url: str) -> str | None:
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.goto(profile_url, timeout=15000)
+
+            # Wait for the profile section to load
+            page.wait_for_selector(".gsc_prf_il", timeout=8000)
+
+            # Extract all lines with that class
+            elements = page.query_selector_all(".gsc_prf_il")
+
+            for el in elements:
+                text = el.inner_text()
+                if "Verified email at" in text:
+                    parts = text.split(" at ")
+                    if len(parts) == 2:
+                        domain = parts[1].strip().lower()
+                        browser.close()
+                        return domain  # e.g. "mit.edu"
+
+            browser.close()
+    except Exception as e:
+        print(f"❌ Failed to extract email domain from profile: {e}")
+
+    return None
+
+def fallback_custom_search(name, field_hint=" ", authored_paper=None):
+    snippets = search_affiliation_snippets_using_serper(name, field_hint, authored_paper)
+    links = [f"https://www.google.com/search?q={name}+{field_hint}"] * len(snippets)
+    return list(zip(snippets, links))
+
+def map_domain_to_affiliation(domain: str, db_path="world_universities_and_domains.json") -> str | None:
+    import json
+
+    ensure_university_json_exists(db_path)
+
+    try:
+        with open(db_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        for entry in data:
+            if domain in entry.get("domains", []):
+                return entry.get("name")
+
+    except Exception as e:
+        print(f"❌ Error looking up domain {domain}: {e}")
+
+    return None
 
 
-def search_affiliation_snippets(name, field_hint="computer science"):
+def strip_to_base_domain(domain):
+    parts = domain.lower().split(".")
+    if len(parts) >= 2:
+        return ".".join(parts[-2:])
+    return domain
+
+def ensure_university_json_exists(db_path="world_universities_and_domains.json"):
+    if not os.path.exists(db_path):
+        print(f"🌐 Downloading university domain JSON to {db_path} ...")
+        url = "https://raw.githubusercontent.com/Hipo/university-domains-list/master/world_universities_and_domains.json"
+        try:
+            subprocess.run(["curl", "-L", url, "--output", db_path], check=True)
+            print("✅ Download complete.")
+        except Exception as e:
+            print(f"❌ Failed to download JSON: {e}")
+
+def search_affiliation_snippets(name: str, paper_title: Optional[str] = None, field_hint: Optional[str] = None) -> Dict:
+    result = {
+        "verified_domain": None,
+        "affiliation": None,
+        "source": None,
+        "profile_url": None,
+        "snippets": [],
+        "links": []
+    }
+
+    # Step 1: Try finding the scholar profile
+    profile_url = find_scholar_profile(name, paper_title)
+    if profile_url:
+        result["profile_url"] = profile_url
+        domain = extract_verified_email(profile_url)
+        if domain:
+            result["verified_domain"] = domain
+            # base_domain = strip_to_base_domain(domain)
+            base_domain = domain.replace(" - homepage","") # strip_to_base_domain(domain)
+            affiliation = map_domain_to_affiliation(base_domain)
+            if affiliation:
+                result["affiliation"] = affiliation
+                result["source"] = "Google Scholar"
+                return result  # 🎯 SUCCESS
+
+    # Step 2: Fallback to custom search snippets
+    snippets_with_links = fallback_custom_search(name, field_hint, paper_title)
+    if snippets_with_links:
+        result["snippets"] = [s for s, l in snippets_with_links]
+        result["links"] = [l for s, l in snippets_with_links]
+        result["source"] = "Custom Search"
+
+    # Step 3: Optional — Human-in-the-loop or AI decision point
+    if HUMAN_IN_LOOP:
+        print("\n🧠 Manual review suggested:")
+        print("Snippets:", result["snippets"])
+        print("Links:", result["links"])
+        print("Enter true affiliation manually or approve later.\n")
+
+    return result
+
+def search_affiliation_snippets_using_serper(name, field_hint = " ", authored_paper=None):
     SERPER_API_KEY = config.SERPER_API_KEY
-    query = f"{name} {field_hint} affiliation"
+    query = f"Latest current institutional Affiliation of Dr {name} "
     conn = http.client.HTTPSConnection("google.serper.dev")
     payload = json.dumps({"q": query})
     headers = {
@@ -275,7 +408,7 @@ def search_affiliation_snippets(name, field_hint="computer science"):
         data = res.read().decode("utf-8")
         results = json.loads(data)
         snippets = []
-        for result in results.get("organic", [])[:3]:
+        for result in results.get("organic", [])[:5]:
             snippet = result.get("snippet")
             if snippet:
                 snippets.append(snippet)
@@ -292,21 +425,6 @@ def geolocate_affiliation(affiliation):
     except:
         return None
     return None
-
-
-
-import folium
-import os
-import time
-
-import os
-import time
-import folium
-
-from PIL import Image
-from io import BytesIO
-import base64
-import folium
 
 def get_icon_with_aspect_ratio(image_bytes, target_height=50):
     """
@@ -331,7 +449,7 @@ def get_icon_with_aspect_ratio(image_bytes, target_height=50):
 
 def create_map(author_affiliations):
     """
-    Creates a folium map with custom markers using institution logos.
+    Creates a folium map with custom markers using institution logos if enabled.
     Returns the folium.Map object.
     """
     m = folium.Map(location=[20, 0], zoom_start=2)
@@ -340,7 +458,10 @@ def create_map(author_affiliations):
         affiliation = item["affiliation"]
         loc = geolocate_affiliation(affiliation)
 
-        if loc:
+        if not loc:
+            continue
+
+        if config.DISPLAY_LOGO:
             logo_url, logo_bytes = get_or_fetch_logo(affiliation)  # expects tuple return
 
             if logo_bytes:
@@ -352,27 +473,21 @@ def create_map(author_affiliations):
                         popup=f"{item['author']}: {affiliation}",
                         tooltip=item['author']
                     ).add_to(m)
+                    continue  # Skip fallback marker if logo used
                 except Exception as e:
                     print(f"⚠️ Failed to render logo for {affiliation}: {e}")
-                    # fallback marker
-                    folium.Marker(
-                        location=loc,
-                        popup=f"{item['author']}: {affiliation}",
-                        tooltip=item['author']
-                    ).add_to(m)
-            else:
-                # fallback marker
-                folium.Marker(
-                    location=loc,
-                    popup=f"{item['author']}: {affiliation}",
-                    tooltip=item['author']
-                ).add_to(m)
+
+        # Fallback marker or when DISPLAY_LOGO is False
+        folium.Marker(
+            location=loc,
+            popup=f"{item['author']}: {affiliation}",
+            tooltip=item['author']
+        ).add_to(m)
 
         time.sleep(1)
 
     os.makedirs("output", exist_ok=True)
     return m
-
 
 if __name__ == "__main__":
     # print (get_institution_logo_and_link_no_AI("MIT USA"))
@@ -385,4 +500,11 @@ if __name__ == "__main__":
     # print(get_institution_logo_brute_force("Tel aviv_ University"))
     # print ("=========================================================")
     print (get_or_fetch_logo("TEl aviv_ University"))
+
+    # url = find_scholar_profile("Rounaq Basu", "Automated mobility-on-demand vs. mass transit")
+    # print("Scholar profile:", url)
+
+    profile_url = "https://scholar.google.com/citations?user=AiujSOkAAAAJ"
+    domain = extract_verified_email(profile_url)
+    print("Verified domain:", domain)
 

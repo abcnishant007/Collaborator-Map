@@ -9,4 +9,5 @@ torch==2.3.0
 ollama==0.5.1
 python-slugify==8.0.4
 pillow==11.2.1
+playwright==1.52.0
 git+https://github.com/OrganicIrradiation/scholarly.git@9269ff36ad2314e6cc0c5b499efc3b79b844707e

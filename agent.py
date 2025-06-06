@@ -1,3 +1,5 @@
+import re
+
 import requests
 import config
 
@@ -25,10 +27,9 @@ def call_deepseek(prompt, model=OLLAMA_MODEL):
     result = response.json()
     return result.get("response", "").strip()
 
-def resolve_affiliation_with_agent(name, search_snippets, field="computer science", email_hint=None):
+def resolve_affiliation_with_agent(name, search_snippets):
 
-    if email_hint:
-        email_prompt = " Use this verified email domain as a strong hint: {email_hint}"
+    field = " "
     prompt = f"""You are an academic assistant.
 
     Given the following name and search result snippets, infer the most likely *current* or the latest institutional affiliation of the person. If there are 
@@ -51,22 +52,25 @@ def resolve_affiliation_with_agent(name, search_snippets, field="computer scienc
  
     
     VERY IMPORTANT: for the FINAL ANSWER: Give your answer clearly as the format shown below. Ensure that only the University or the institute name is present here; not the post or academic rank etc...
-    
-    
-    Affiliation: <Your Answer Here>
+    Please respond in the following format exactly:
+
+    Affiliation: <affiliation>
+    ConfidenceScore: <a number between 0.0 and 1.0 indicating how confident you are in this answer>
+        
     """
     print("🧠 Prompt sent to DeepSeek via Ollama:\n", prompt)
     response = call_deepseek(prompt)
     print("🧠 Raw model response:\n", response)
 
-    # Use regex or a fallback to extract the answer
-    import re
-    match = re.search(r"Affiliation:\s*(.+)", response)
-    answer = match.group(1).strip() if match else response.strip().split("\n")[0]
+    response = call_deepseek(prompt)
 
-    # response = call_deepseek(prompt)
-    # answer = response.split("Final Answer:")[-1].strip().split("\n")[0]
-    return answer
+    match_aff = re.search(r"Affiliation:\s*(.*)", response)
+    match_conf = re.search(r"ConfidenceScore:\s*([0-9.]+)", response)
+
+    affiliation = match_aff.group(1).strip() if match_aff else None
+    confidence = float(match_conf.group(1)) if match_conf else 0.0
+
+    return affiliation, confidence
 
 
 def extract_after_think_tag(response: str) -> str:
