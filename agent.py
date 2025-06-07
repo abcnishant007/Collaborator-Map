@@ -1,15 +1,13 @@
 import requests
-import config
+from config import OLLAMA_MODEL, RUNNING_ON_SERVER
 
 #
-if config.RUNNING_ON_SERVER:
+if RUNNING_ON_SERVER:
     # implying that this tunnel has been created
     # ssh -L 8080:localhost:11434 username@server.sg
     OLLAMA_URL = "http://localhost:8080/api/generate"
-    OLLAMA_MODEL = "deepseek-r1:7b"
-elif not config.RUNNING_ON_SERVER:
+elif not RUNNING_ON_SERVER:
     OLLAMA_URL = "http://localhost:11434/api/generate"
-    OLLAMA_MODEL = "deepseek-r1:7b"
 else:
     raise Exception("Wrong configuration; RUNNING_ON_SERVER")
 

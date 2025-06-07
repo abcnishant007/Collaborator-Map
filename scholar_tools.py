@@ -5,7 +5,12 @@ import pickle
 from geopy.geocoders import Nominatim
 from scholarly import scholarly
 
-import config
+import requests
+from slugify import slugify
+from pathlib import Path
+import subprocess
+
+from config import PYTHONANWYWHERE_API_KEY, PICKLE_PROTOCOL, SERPER_API_KEY
 
 geolocator = Nominatim(user_agent="affiliation_mapper")
 
@@ -121,15 +126,12 @@ def get_institution_logo_brute_force(institution_name):
         print(f"⚠️ Failed to download selected logo: {e}")
         return logo_url, None
 
-import requests
-from slugify import slugify
-from pathlib import Path
-import subprocess
+
 # from your_module import get_institution_logo_brute_force  # replace with actual import
 
-API_KEY = config.PYTHONANWYWHERE_API_KEY
+# PYTHONANWYWHERE_API_KEY = config.PYTHONANWYWHERE_API_KEY
 BASE_URL = "https://lifezbeautiful.pythonanywhere.com"
-HEADERS = {"X-API-Key": API_KEY}
+HEADERS = {"X-API-Key": PYTHONANWYWHERE_API_KEY}
 TMP_DIR = Path("tmp_logos")
 TMP_DIR.mkdir(exist_ok=True)
 
@@ -213,7 +215,7 @@ def get_institution_logo_and_link_no_AI(institution_name):
     return None, wiki_link
 
 
-def validate_and_get_papers(user_id):
+def validate_and_get_papers(user_id, max_pubs=30):
     try:
         try:
             author = scholarly.search_author_id(user_id)
@@ -222,16 +224,23 @@ def validate_and_get_papers(user_id):
 
         author = scholarly.fill(author, sections=["publications"])
         papers = []
-        for pub in author.get("publications", [])[:5]:
-            filled_pub = scholarly.fill(pub)
-            papers.append({
-                "title": filled_pub["bib"]["title"],
-                "authors": filled_pub["bib"].get("author", "").split(" and ")
-            })
+
+        for i, pub in enumerate(author.get("publications", [])):
+            if i >= max_pubs:
+                break
+            try:
+                filled_pub = scholarly.fill(pub)
+                papers.append({
+                    "title": filled_pub["bib"]["title"],
+                    "authors": filled_pub["bib"].get("author", "").split(" and ")
+                })
+            except Exception as e:
+                print(f"⚠️ Skipped publication {i} due to error: {e}")
 
         return papers, author.get("name"), author.get("email_domain"), None
     except Exception as e:
         return None, None, None, f"Error fetching profile: {e}"
+
 
 
 def get_unique_coauthors(papers, owner_name=None):
@@ -255,12 +264,12 @@ def load_cache():
 
 def save_cache(cache):
     with open(CACHE_FILE, "wb") as f:
-        pickle.dump(cache, f, protocol=config.PICKLE_PROTOCOL)
+        pickle.dump(cache, f, protocol=PICKLE_PROTOCOL)
 
 
 
 def search_affiliation_snippets(name, field_hint="computer science"):
-    SERPER_API_KEY = config.SERPER_API_KEY
+    # SERPER_API_KEY = config.SERPER_API_KEY
     query = f"{name} {field_hint} affiliation"
     conn = http.client.HTTPSConnection("google.serper.dev")
     payload = json.dumps({"q": query})
