@@ -53,13 +53,20 @@ class OpenAlexClient:
         response.raise_for_status()
         return response.json()
 
-    def fetch_works_for_author(self, author_id: str) -> List[Dict[str, Any]]:
+    def fetch_works_for_author(
+        self,
+        author_id: str,
+        per_page: Optional[int] = None,
+        max_pages: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
         canonical = canonical_author_id(author_id)
         url = f"{self.settings.openalex_base_url}/works"
+        effective_per_page = int(per_page or self.settings.openalex_per_page)
+        effective_max_pages = int(max_pages or self.settings.openalex_max_work_pages)
         params = self._params(
             {
                 "filter": f"authorships.author.id:{canonical}",
-                "per-page": self.settings.openalex_per_page,
+                "per-page": effective_per_page,
                 "cursor": "*",
                 "sort": "publication_year:desc",
             }
@@ -68,7 +75,7 @@ class OpenAlexClient:
         page = 0
         while True:
             page += 1
-            if page > self.settings.openalex_max_work_pages:
+            if page > effective_max_pages:
                 break
             response = self.client.get(url, params=params)
             response.raise_for_status()

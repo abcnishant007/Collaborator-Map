@@ -11,6 +11,7 @@ client/dist/
 server/collab_atlas.db
 server/*.db
 server/*.db-journal
+more_data/institution_coordinate_cache.csv
 
 output/*
 .run-logs/

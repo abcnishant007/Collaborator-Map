@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     llm_geocode_enabled: bool = True
     llm_geocode_timeout_seconds: float = 15.0
     openrouter_cheap_model: str = "google/gemma-3-12b-it"
+    unplaced_openalex_resolution_enabled: bool = True
+    unplaced_openalex_recent_years: int = 4
+    unplaced_openalex_max_per_snapshot: int = 120
+    unplaced_openalex_max_work_pages: int = 1
+    unplaced_openalex_per_page: int = 50
+    unplaced_openalex_min_confidence: float = 0.0
     unplaced_online_resolution_enabled: bool = True
     unplaced_online_max_per_snapshot: int = 120
     unplaced_online_min_confidence: float = 0.72

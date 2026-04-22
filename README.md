@@ -37,6 +37,12 @@ Required env vars are already listed in both files:
 - `LLM_GEOCODE_ENABLED`
 - `LLM_GEOCODE_TIMEOUT_SECONDS`
 - `OPENROUTER_CHEAP_MODEL` (low-cost model for unplaced collaborator online resolution)
+- `UNPLACED_OPENALEX_RESOLUTION_ENABLED`
+- `UNPLACED_OPENALEX_RECENT_YEARS`
+- `UNPLACED_OPENALEX_MAX_PER_SNAPSHOT`
+- `UNPLACED_OPENALEX_MAX_WORK_PAGES`
+- `UNPLACED_OPENALEX_PER_PAGE`
+- `UNPLACED_OPENALEX_MIN_CONFIDENCE` (set `0.0` to accept any OpenAlex recent-work hit)
 - `UNPLACED_ONLINE_RESOLUTION_ENABLED`
 - `UNPLACED_ONLINE_MAX_PER_SNAPSHOT`
 - `UNPLACED_ONLINE_MIN_CONFIDENCE`
@@ -202,8 +208,9 @@ When step 5 or 6 succeeds, the institution coordinate is appended to `more_data/
 
 Unplaced collaborator reduction:
 
-- For collaborators missing institution on joint-paper records, the backend can run online LLM resolution (using `OPENROUTER_CHEAP_MODEL` with web search enabled) to infer a likely institution.
-- Strict JSON is required; placement is only applied when confidence passes `UNPLACED_ONLINE_MIN_CONFIDENCE`.
+- For collaborators missing institution on joint-paper records, the backend first attempts OpenAlex recent-works institution extraction (bounded by `UNPLACED_OPENALEX_MAX_PER_SNAPSHOT`, `UNPLACED_OPENALEX_RECENT_YEARS`, `UNPLACED_OPENALEX_MAX_WORK_PAGES`, and `UNPLACED_OPENALEX_PER_PAGE`).
+- If still unresolved, it can run online LLM resolution (using `OPENROUTER_CHEAP_MODEL` with web search enabled) to infer a likely institution.
+- OpenAlex-derived placement uses `UNPLACED_OPENALEX_MIN_CONFIDENCE` (default `0.0`), while online LLM-derived placement uses `UNPLACED_ONLINE_MIN_CONFIDENCE`.
 - Resolutions are cached in `affiliation_resolution` to reduce repeat cost.
 
 ## AWS deployment steps (EC2)

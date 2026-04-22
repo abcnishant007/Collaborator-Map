@@ -565,6 +565,88 @@ def _parse_loose_json_object(content: str) -> Optional[dict]:
     return None
 
 
+def infer_unplaced_institution_from_openalex_recent_works(
+    collaborator_openalex_id: str,
+    recent_years: int,
+) -> Optional[Dict[str, Any]]:
+    settings = get_settings()
+    canonical_collaborator = canonical_author_id(collaborator_openalex_id)
+    if not canonical_collaborator:
+        return None
+
+    current_year = datetime.now(timezone.utc).year
+    min_year = current_year - max(0, int(recent_years)) + 1
+    choices: Dict[str, Dict[str, Any]] = {}
+
+    openalex = OpenAlexClient()
+    try:
+        works = openalex.fetch_works_for_author(
+            canonical_collaborator,
+            per_page=settings.unplaced_openalex_per_page,
+            max_pages=settings.unplaced_openalex_max_work_pages,
+        )
+    except Exception:
+        return None
+    finally:
+        openalex.close()
+
+    for work in works:
+        publication_year = work.get("publication_year")
+        if publication_year is not None and publication_year < min_year:
+            break
+        work_id = str(work.get("id") or "")
+        for authorship in (work.get("authorships") or []):
+            author = authorship.get("author") or {}
+            if canonical_author_id(author.get("id", "")) != canonical_collaborator:
+                continue
+            for inst in (authorship.get("institutions") or []):
+                institution_name = (inst.get("display_name") or "").strip()
+                if not institution_name:
+                    continue
+                institution_id = inst.get("id")
+                country_code = (inst.get("country_code") or "").strip().upper() or None
+                key = normalize_institution_key(institution_id, institution_name)
+                if not key:
+                    continue
+                item = choices.get(key)
+                if not item:
+                    item = {
+                        "institution_name": institution_name,
+                        "country_code": country_code,
+                        "count": 0,
+                        "latest_year": publication_year,
+                        "evidence_urls": [],
+                    }
+                    choices[key] = item
+                item["count"] += 1
+                if publication_year is not None:
+                    if item["latest_year"] is None or publication_year > item["latest_year"]:
+                        item["latest_year"] = publication_year
+                if work_id and work_id not in item["evidence_urls"] and len(item["evidence_urls"]) < 5:
+                    item["evidence_urls"].append(work_id)
+
+    if not choices:
+        return None
+
+    best = max(
+        choices.values(),
+        key=lambda x: (
+            int(x.get("count") or 0),
+            int(x.get("latest_year") or -1),
+        ),
+    )
+    count = int(best.get("count") or 0)
+    confidence = min(1.0, 0.55 + (0.1 * max(0, count - 1)))
+    return {
+        "institution_name": best.get("institution_name"),
+        "country_code": best.get("country_code"),
+        "confidence": confidence,
+        "evidence_urls": best.get("evidence_urls") or [],
+        "reason_short": f"OpenAlex recent works match count={count}",
+        "resolution_source": "openalex_recent_works",
+    }
+
+
 def llm_infer_unplaced_institution(
     collaborator_name: str,
     collaborator_openalex_id: str,
@@ -672,6 +754,7 @@ def build_map_snapshot(conn: sqlite3.Connection, focal_author_id: str, force_ref
     collaborators: Dict[str, CollaboratorAggregate] = {}
     unplaced: List[Dict[str, Any]] = []
     focal_found_in_works = 0
+    unplaced_openalex_attempts = 0
     unplaced_online_attempts = 0
     focal_display_name = focal_author.get("display_name")
 
@@ -779,6 +862,7 @@ def build_map_snapshot(conn: sqlite3.Connection, focal_author_id: str, force_ref
             fallback_country_code: Optional[str] = None
             fallback_confidence: float = 0.0
             evidence_urls: List[str] = []
+            fallback_source = "none"
 
             cached_resolution = conn.execute(
                 """
@@ -799,6 +883,42 @@ def build_map_snapshot(conn: sqlite3.Connection, focal_author_id: str, force_ref
                 fallback_country_code = parsed.get("country_code")
                 fallback_confidence = float(cached_resolution["confidence"] or 0.0)
                 evidence_urls = parsed.get("evidence_urls") or []
+                fallback_source = str(parsed.get("resolution_source") or "cached")
+
+            should_try_openalex = (
+                not fallback_institution_name
+                and settings.unplaced_openalex_resolution_enabled
+                and force_refresh
+                and unplaced_openalex_attempts < settings.unplaced_openalex_max_per_snapshot
+            )
+            if should_try_openalex:
+                unplaced_openalex_attempts += 1
+                inferred = infer_unplaced_institution_from_openalex_recent_works(
+                    collaborator_openalex_id=collaborator_id,
+                    recent_years=settings.unplaced_openalex_recent_years,
+                )
+                if inferred:
+                    fallback_institution_name = inferred.get("institution_name")
+                    fallback_country_code = inferred.get("country_code")
+                    fallback_confidence = float(inferred.get("confidence") or 0.0)
+                    evidence_urls = inferred.get("evidence_urls") or []
+                    fallback_source = str(inferred.get("resolution_source") or "openalex_recent_works")
+                    now_resolution = utc_now_iso()
+                    conn.execute(
+                        """
+                        INSERT INTO affiliation_resolution(
+                            openalex_author_id, evidence_json, adjudication_json, confidence, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            collaborator_id,
+                            json.dumps({"evidence_urls": evidence_urls}),
+                            json.dumps(inferred),
+                            fallback_confidence,
+                            now_resolution,
+                            now_resolution,
+                        ),
+                    )
 
             should_try_online = (
                 not fallback_institution_name
@@ -820,6 +940,7 @@ def build_map_snapshot(conn: sqlite3.Connection, focal_author_id: str, force_ref
                     fallback_country_code = inferred.get("country_code")
                     fallback_confidence = float(inferred.get("confidence") or 0.0)
                     evidence_urls = inferred.get("evidence_urls") or []
+                    fallback_source = "llm_online_unplaced"
                     now_resolution = utc_now_iso()
                     conn.execute(
                         """
@@ -830,14 +951,19 @@ def build_map_snapshot(conn: sqlite3.Connection, focal_author_id: str, force_ref
                         (
                             collaborator_id,
                             json.dumps({"evidence_urls": evidence_urls}),
-                            json.dumps(inferred),
+                            json.dumps({**inferred, "resolution_source": fallback_source}),
                             fallback_confidence,
                             now_resolution,
                             now_resolution,
                         ),
                     )
 
-            if fallback_institution_name and fallback_confidence >= settings.unplaced_online_min_confidence:
+            min_required_confidence = (
+                settings.unplaced_openalex_min_confidence
+                if fallback_source == "openalex_recent_works"
+                else settings.unplaced_online_min_confidence
+            )
+            if fallback_institution_name and fallback_confidence >= min_required_confidence:
                 _, inferred_country_name = infer_country_for_institution(fallback_institution_name)
                 key = normalize_institution_key(None, fallback_institution_name)
                 if key:
@@ -883,7 +1009,7 @@ def build_map_snapshot(conn: sqlite3.Connection, focal_author_id: str, force_ref
                             inferred_country_name,
                             lat,
                             lon,
-                            "llm_online_unplaced",
+                            fallback_source,
                             json.dumps([]),
                             now,
                         ),
@@ -900,7 +1026,7 @@ def build_map_snapshot(conn: sqlite3.Connection, focal_author_id: str, force_ref
                             canonical_focal,
                             collaborator_id,
                             key,
-                            "llm_online_unplaced",
+                            fallback_source,
                             None,
                             agg.last_collaboration_year,
                             json.dumps({"evidence_urls": evidence_urls}),
@@ -931,7 +1057,7 @@ def build_map_snapshot(conn: sqlite3.Connection, focal_author_id: str, force_ref
                             "city_name": None,
                             "city_lat": None,
                             "city_lon": None,
-                            "coordinate_basis": "llm_online_unplaced",
+                            "coordinate_basis": fallback_source,
                             "people": [],
                             "max_last_collaboration_year": agg.last_collaboration_year,
                             "min_last_collaboration_year": agg.last_collaboration_year,
