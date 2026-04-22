@@ -10,6 +10,7 @@ client/node_modules/
 client/dist/
 server/collab_atlas.db
 server/*.db
+server/*.db-journal
 
 output/*
 .run-logs/
