@@ -224,7 +224,7 @@ export default function App() {
       setSuggestions([]);
       setQuery(candidate.display_name);
       await selectFocalScholar(candidate.id);
-      const data = await fetchMapSnapshot(candidate.id, true);
+      const data = await fetchMapSnapshot(candidate.id, false);
       setSelectedAuthor(candidate);
       setSnapshot(data);
       setSelectedBlobKey(data.blobs?.[0]?.institution_key || null);
@@ -265,6 +265,21 @@ export default function App() {
       setSnapshot(data);
     } catch (refreshError) {
       setError(refreshError.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRebuildMap = async () => {
+    if (!selectedAuthor?.id) return;
+    try {
+      setLoading(true);
+      setError("");
+      const data = await fetchMapSnapshot(selectedAuthor.id, true);
+      setSnapshot(data);
+      setSelectedBlobKey(data.blobs?.[0]?.institution_key || null);
+    } catch (rebuildError) {
+      setError(rebuildError.message);
     } finally {
       setLoading(false);
     }
@@ -398,6 +413,9 @@ export default function App() {
         </label>
         <button onClick={handleRefreshAffiliation} disabled={!selectedAuthor || loading}>
           Refresh focal affiliation
+        </button>
+        <button onClick={handleRebuildMap} disabled={!selectedAuthor || loading}>
+          Rebuild map
         </button>
         <button onClick={() => copyToClipboard(dynamicPermalink, "Dynamic permalink")} disabled={!selectedAuthor}>
           Copy dynamic permalink
