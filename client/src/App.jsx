@@ -236,6 +236,7 @@ export default function App() {
   };
 
   const handleInputKeyDown = (event) => {
+    if (loading) return;
     if (event.key === "ArrowDown" && suggestions.length) {
       event.preventDefault();
       setActiveIndex((index) => (index + 1) % suggestions.length);
@@ -300,7 +301,7 @@ export default function App() {
             the selected focal scholar.
           </p>
         </div>
-        <div className="search-wrap">
+        <div className={`search-wrap ${loading ? "search-locked" : ""}`}>
           <input
             ref={inputRef}
             value={query}
@@ -308,6 +309,7 @@ export default function App() {
             onKeyDown={handleInputKeyDown}
             placeholder="Type 4+ characters to search OpenAlex authors"
             aria-label="Search scholar"
+            disabled={loading}
           />
           <button
             type="button"
@@ -323,7 +325,9 @@ export default function App() {
                 <li
                   key={item.id}
                   className={index === activeIndex ? "active" : ""}
-                  onMouseDown={() => submitSelection(item)}
+                  onMouseDown={() => {
+                    if (!loading) submitSelection(item);
+                  }}
                   role="option"
                   aria-selected={index === activeIndex}
                 >
@@ -413,6 +417,12 @@ export default function App() {
         </a>
       </section>
       {copyStatus && <p className="copy-status">{copyStatus}</p>}
+      {loading && (
+        <div className="loading-banner" role="status" aria-live="polite">
+          <span className="spinner" />
+          Generating map data, please wait...
+        </div>
+      )}
 
       {snapshot?.summary && (
         <section className="summary">
@@ -426,6 +436,12 @@ export default function App() {
 
       <main className="content">
         <div className="map-panel">
+          {loading && (
+            <div className="map-loading-overlay" role="status" aria-live="polite">
+              <span className="spinner large" />
+              <span>Generating map...</span>
+            </div>
+          )}
           <MapContainer center={CENTER} zoom={2} minZoom={2} scrollWheelZoom className="map-root">
             <TileLayer
               attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
@@ -450,6 +466,12 @@ export default function App() {
                     <strong>{blob.institution_name}</strong>
                     <br />
                     {blob.country_name || "Country unknown"}
+                    {blob.city_name ? (
+                      <>
+                        <br />
+                        {`City fallback: ${blob.city_name} (${blob.city_lat?.toFixed?.(3)}, ${blob.city_lon?.toFixed?.(3)})`}
+                      </>
+                    ) : null}
                     <br />
                     {blob.collaborator_count} collaborators
                   </Popup>

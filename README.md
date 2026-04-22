@@ -30,6 +30,12 @@ Required env vars are already listed in both files:
 - `OPENALEX_BASE_URL`
 - `OPENALEX_API_KEY`
 - `EXA_API_KEY`
+- `SEARCH_CACHE_VERSION` (bump to invalidate stale suggestion ranking cache)
+- `GEOCODE_ENABLED`
+- `GEOCODE_TIMEOUT_SECONDS`
+- `GEOCODE_MAX_LOOKUPS_PER_SNAPSHOT`
+- `LLM_GEOCODE_ENABLED`
+- `LLM_GEOCODE_TIMEOUT_SECONDS`
 - `DATABASE_URL`
 - cache + refresh TTL vars
 
@@ -75,8 +81,8 @@ After installing backend and frontend dependencies:
 
 Defaults:
 
-- Backend: `127.0.0.1:8000`
-- Frontend: `127.0.0.1:5173`
+- Backend: `127.0.0.1:5180`
+- Frontend: `127.0.0.1:5179`
 - Logs: `.run-logs/backend.log` and `.run-logs/frontend.log`
 
 Optional overrides:
@@ -84,6 +90,12 @@ Optional overrides:
 ```bash
 CONDA_ENV=collab BACKEND_PORT=9000 FRONTEND_PORT=5174 ./start-servers.sh
 ```
+
+Port conflict behavior:
+
+- Frontend uses strict port mode (`--strictPort`) and will fail instead of silently switching ports.
+- Launcher always auto-kills existing processes bound to selected backend/frontend ports before startup.
+- Dev proxy target is auto-wired to the launcher backend URL via `VITE_DEV_API_TARGET`.
 
 ## API endpoints
 
@@ -160,6 +172,28 @@ Web-search behavior:
 
 - `OPENROUTER_FORCE_ONLINE=true` adds `:online` automatically and enables web plugin usage
 - `OPENROUTER_FORCE_ONLINE=false` calls the same selected model without web plugin
+
+## Optional local coordinate datasets (faster map builds)
+
+- University coordinates (Kaggle): `https://www.kaggle.com/datasets/alirezarazeghi/universities-info-with-coordinates/data`
+- World cities CSV: `https://raw.githubusercontent.com/joelacus/world-cities/main/world_cities_15000.csv`
+
+If present locally, the backend now uses them before network geocoding:
+
+- `more_data/universities_with_coordinates.csv` (or `more_data/Unis_with_lat_long.csv`)
+- `more_data/institution_coordinate_cache.csv` (auto-grown from successful online fallback lookups)
+- `cities_lat_long.csv`
+
+Lookup order for missing institution coordinates:
+
+1. OpenAlex institution `geo`
+2. cached coordinates in local DB
+3. local university coordinate CSV
+4. local city CSV (country-filtered name match)
+5. OpenRouter model geocoding (`OPENROUTER_ACTIVE_MODEL` + `:online`) with strict JSON lat/lon extraction
+6. network geocoding (bounded timeout and per-snapshot cap)
+
+When step 5 or 6 succeeds, the institution coordinate is appended to `more_data/institution_coordinate_cache.csv` so future runs can resolve it locally without another network lookup.
 
 ## AWS deployment steps (EC2)
 

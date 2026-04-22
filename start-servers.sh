@@ -8,9 +8,9 @@ mkdir -p "${LOG_DIR}"
 
 CONDA_ENV="${CONDA_ENV:-collab}"
 BACKEND_HOST="${BACKEND_HOST:-127.0.0.1}"
-BACKEND_PORT="${BACKEND_PORT:-8000}"
+BACKEND_PORT="${BACKEND_PORT:-5180}"
 FRONTEND_HOST="${FRONTEND_HOST:-127.0.0.1}"
-FRONTEND_PORT="${FRONTEND_PORT:-5173}"
+FRONTEND_PORT="${FRONTEND_PORT:-5179}"
 
 BACKEND_LOG="${LOG_DIR}/backend.log"
 FRONTEND_LOG="${LOG_DIR}/frontend.log"
@@ -40,6 +40,28 @@ cleanup() {
 
 trap cleanup INT TERM EXIT
 
+kill_port_if_needed() {
+  local port="$1"
+  local label="$2"
+  if ! command -v lsof >/dev/null 2>&1; then
+    echo "Warning: lsof not found; cannot auto-kill processes on port ${port}."
+    return
+  fi
+  local pids
+  pids="$(lsof -ti tcp:${port} || true)"
+  if [[ -z "${pids}" ]]; then
+    return
+  fi
+  echo "Stopping existing ${label} process(es) on port ${port}: ${pids}"
+  kill ${pids} >/dev/null 2>&1 || true
+  sleep 0.7
+  local still_up
+  still_up="$(lsof -ti tcp:${port} || true)"
+  if [[ -n "${still_up}" ]]; then
+    kill -9 ${still_up} >/dev/null 2>&1 || true
+  fi
+}
+
 if ! command -v conda >/dev/null 2>&1; then
   echo "Error: conda is required but not found in PATH."
   exit 1
@@ -60,6 +82,9 @@ if ! conda run -n "${CONDA_ENV}" npm -v >/dev/null 2>&1; then
   exit 1
 fi
 
+kill_port_if_needed "${BACKEND_PORT}" "backend"
+kill_port_if_needed "${FRONTEND_PORT}" "frontend"
+
 echo "Starting backend on http://${BACKEND_HOST}:${BACKEND_PORT} ..."
 conda run -n "${CONDA_ENV}" \
   --no-capture-output \
@@ -72,8 +97,9 @@ echo "${BACKEND_PID}" >"${BACKEND_PID_FILE}"
 
 echo "Starting frontend on http://${FRONTEND_HOST}:${FRONTEND_PORT} ..."
 (
-  conda run -n "${CONDA_ENV}" --no-capture-output npm --prefix "${ROOT_DIR}/client" run dev -- \
-    --host "${FRONTEND_HOST}" --port "${FRONTEND_PORT}"
+  VITE_DEV_API_TARGET="http://${BACKEND_HOST}:${BACKEND_PORT}" \
+    conda run -n "${CONDA_ENV}" --no-capture-output npm --prefix "${ROOT_DIR}/client" run dev -- \
+    --host "${FRONTEND_HOST}" --port "${FRONTEND_PORT}" --strictPort
 ) >"${FRONTEND_LOG}" 2>&1 &
 FRONTEND_PID=$!
 echo "${FRONTEND_PID}" >"${FRONTEND_PID_FILE}"

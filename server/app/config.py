@@ -18,11 +18,17 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./server/collab_atlas.db"
     cache_ttl_seconds: int = 86_400
     search_cache_ttl_seconds: int = 86_400
+    search_cache_version: int = 2
     snapshot_ttl_seconds: int = 43_200
     refresh_interval_seconds: int = 86_400
     openalex_mailto: str = ""
     openalex_max_work_pages: int = 8
     openalex_per_page: int = 200
+    geocode_enabled: bool = True
+    geocode_timeout_seconds: float = 1.5
+    geocode_max_lookups_per_snapshot: int = 5
+    llm_geocode_enabled: bool = True
+    llm_geocode_timeout_seconds: float = 15.0
 
     model_config = SettingsConfigDict(
         env_file=str(Path(__file__).resolve().parents[1] / ".env"),

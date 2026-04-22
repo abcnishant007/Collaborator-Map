@@ -150,6 +150,9 @@ def init_db() -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     try:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA busy_timeout=20000;")
         conn.executescript(SCHEMA_SQL)
         conn.commit()
     finally:
@@ -160,9 +163,12 @@ def init_db() -> None:
 def get_conn():
     settings = get_settings()
     db_path = database_path_from_url(settings.database_url)
-    conn = sqlite3.connect(db_path, check_same_thread=False)
+    conn = sqlite3.connect(db_path, check_same_thread=False, timeout=20.0)
     conn.row_factory = sqlite3.Row
     try:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA busy_timeout=20000;")
         yield conn
         conn.commit()
     finally:
@@ -191,4 +197,3 @@ def upsert_json_cache(
         """,
         (key, json.dumps(payload), freshness, now),
     )
-

@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 import sqlite3
+import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -15,9 +17,29 @@ from .config import get_settings, resolve_openrouter_model
 from .db import utc_now_iso
 from .normalization import normalize_institution_key, normalize_text
 from .openalex import OpenAlexClient, canonical_author_id
-from .university_reference import infer_country_for_institution
+from .university_reference import (
+    append_coordinate_cache_row,
+    infer_country_for_institution,
+    infer_city_for_institution,
+    infer_local_coordinates,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def execute_write_with_retry(conn: sqlite3.Connection, sql: str, params: tuple, retries: int = 3) -> None:
+    attempt = 0
+    while True:
+        try:
+            conn.execute(sql, params)
+            conn.commit()
+            return
+        except sqlite3.OperationalError as exc:
+            attempt += 1
+            message = str(exc).lower()
+            if "database is locked" not in message or attempt > retries:
+                raise
+            time.sleep(0.08 * attempt)
 
 
 def choose_preferred_link(
@@ -111,7 +133,8 @@ def persist_author_candidate(conn: sqlite3.Connection, candidate: Dict[str, Any]
     now = utc_now_iso()
     openalex_id = canonical_author_id(candidate["id"])
     openalex_url = candidate.get("openalex_url") or openalex_id
-    conn.execute(
+    execute_write_with_retry(
+        conn,
         """
         INSERT INTO author_cache (
             openalex_author_id, display_name, normalized_name, last_known_affiliation,
@@ -168,15 +191,46 @@ def merge_and_rank_candidates(local: List[Dict[str, Any]], remote: List[Dict[str
 
     normalized_query = normalize_text(query)
 
-    def score(item: Dict[str, Any]) -> Tuple[int, int, int]:
+    def score(item: Dict[str, Any]) -> Tuple[int, int, int, int]:
         name = normalize_text(item.get("display_name") or "")
         prefix_bonus = 2 if name.startswith(normalized_query) else 0
-        source_bonus = 1 if item.get("source") == "local" else 0
+        source_kind = item.get("source")
+        source_bonus = 0
+        if source_kind == "openalex_autocomplete":
+            source_bonus = 3
+        elif source_kind == "local":
+            source_bonus = 1
+        elif source_kind == "openalex_search_fallback":
+            source_bonus = -1
         impact = int(math.log1p(max(int(item.get("works_count") or 0), int(item.get("cited_by_count") or 0))))
-        return prefix_bonus, source_bonus, impact
+        orcid_bonus = 1 if item.get("orcid") else 0
+        return prefix_bonus, source_bonus, impact, orcid_bonus
 
+    def collapse_likely_duplicates(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        for item in items:
+            name_key = normalize_text(item.get("display_name") or "")
+            if not name_key:
+                continue
+            grouped.setdefault(name_key, []).append(item)
+
+        collapsed: List[Dict[str, Any]] = []
+        for _, group in grouped.items():
+            best = sorted(
+                group,
+                key=lambda x: (
+                    score(x),
+                    int(x.get("works_count") or 0),
+                    int(x.get("cited_by_count") or 0),
+                ),
+                reverse=True,
+            )[0]
+            collapsed.append(best)
+        return collapsed
+
+    de_duplicated = collapse_likely_duplicates(list(merged.values()))
     ranked = sorted(
-        merged.values(),
+        de_duplicated,
         key=lambda x: (
             score(x),
             int(x.get("works_count") or 0),
@@ -204,9 +258,10 @@ def autocomplete_authors(conn: sqlite3.Connection, query: str) -> Dict[str, Any]
     remote_error: Optional[str] = None
     remote_source = "autocomplete"
     remote_count = 0
+    cache_key = f"v{settings.search_cache_version}:{normalize_text(q)}"
     cached_row = conn.execute(
         "SELECT candidate_json, freshness_timestamp FROM search_suggestion_cache WHERE prefix = ?",
-        (normalize_text(q),),
+        (cache_key,),
     ).fetchone()
     if cached_row:
         freshness = datetime.fromisoformat(cached_row["freshness_timestamp"])
@@ -235,7 +290,7 @@ def autocomplete_authors(conn: sqlite3.Connection, query: str) -> Dict[str, Any]
                     "works_count": row.get("works_count") or 0,
                     "cited_by_count": row.get("cited_by_count") or 0,
                     "openalex_url": row.get("id"),
-                    "source": "openalex",
+                    "source": "openalex_autocomplete",
                 }
             )
         if not remote_candidates:
@@ -243,6 +298,7 @@ def autocomplete_authors(conn: sqlite3.Connection, query: str) -> Dict[str, Any]
             for row in openalex.search_authors(q, per_page=12):
                 candidate = author_search_row_to_candidate(row)
                 if candidate.get("id") and candidate.get("display_name"):
+                    candidate["source"] = "openalex_search_fallback"
                     remote_candidates.append(candidate)
         remote_count = len(remote_candidates)
     except httpx.HTTPStatusError as exc:
@@ -269,19 +325,26 @@ def autocomplete_authors(conn: sqlite3.Connection, query: str) -> Dict[str, Any]
 
     merged = merge_and_rank_candidates(local, remote_candidates, q)
     for candidate in merged:
-        persist_author_candidate(conn, candidate)
+        try:
+            persist_author_candidate(conn, candidate)
+        except sqlite3.OperationalError as exc:
+            logger.warning("Skipping author cache write due to SQLite lock: %s", exc)
 
     now = utc_now_iso()
-    conn.execute(
-        """
-        INSERT INTO search_suggestion_cache(prefix, candidate_json, freshness_timestamp)
-        VALUES (?, ?, ?)
-        ON CONFLICT(prefix) DO UPDATE SET
-            candidate_json=excluded.candidate_json,
-            freshness_timestamp=excluded.freshness_timestamp
-        """,
-        (normalize_text(q), json.dumps(merged), now),
-    )
+    try:
+        execute_write_with_retry(
+            conn,
+            """
+            INSERT INTO search_suggestion_cache(prefix, candidate_json, freshness_timestamp)
+            VALUES (?, ?, ?)
+            ON CONFLICT(prefix) DO UPDATE SET
+                candidate_json=excluded.candidate_json,
+                freshness_timestamp=excluded.freshness_timestamp
+            """,
+            (cache_key, json.dumps(merged), now),
+        )
+    except sqlite3.OperationalError as exc:
+        logger.warning("Skipping suggestion cache write due to SQLite lock: %s", exc)
     return {
         "results": merged,
         "remote_error": remote_error,
@@ -397,7 +460,11 @@ def fetch_person_links(conn: sqlite3.Connection, openalex_author_id: str) -> Dic
     return {"preferred_url": openalex_url, "available_links": [openalex_url]}
 
 
-def geocode_institution_once(name: Optional[str], country_name: Optional[str]) -> Tuple[Optional[float], Optional[float]]:
+def geocode_institution_once(
+    name: Optional[str],
+    country_name: Optional[str],
+    timeout_seconds: float = 1.5,
+) -> Tuple[Optional[float], Optional[float]]:
     if not name:
         return None, None
     query = name if not country_name else f"{name}, {country_name}"
@@ -406,7 +473,7 @@ def geocode_institution_once(name: Optional[str], country_name: Optional[str]) -
             "https://nominatim.openstreetmap.org/search",
             params={"q": query, "format": "jsonv2", "limit": 1},
             headers={"User-Agent": "collaboration-atlas/0.1"},
-            timeout=8.0,
+            timeout=timeout_seconds,
         )
         response.raise_for_status()
         results = response.json()
@@ -415,6 +482,68 @@ def geocode_institution_once(name: Optional[str], country_name: Optional[str]) -
         return float(results[0]["lat"]), float(results[0]["lon"])
     except Exception:
         return None, None
+
+
+def llm_geocode_institution_once(
+    institution_name: Optional[str],
+    country_name: Optional[str],
+    timeout_seconds: float = 15.0,
+) -> Tuple[Optional[float], Optional[float]]:
+    settings = get_settings()
+    if not institution_name or not settings.openrouter_api_key or not settings.llm_geocode_enabled:
+        return None, None
+
+    prompt_payload = {
+        "institution_name": institution_name,
+        "country_name": country_name,
+        "required_output_json_schema": {"lat": "float", "lon": "float"},
+    }
+    body = {
+        "model": resolve_openrouter_model(settings),
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Find institution coordinates from web evidence. "
+                    "Return STRICT JSON only with keys lat and lon. "
+                    "No markdown, no prose, no extra keys."
+                ),
+            },
+            {"role": "user", "content": json.dumps(prompt_payload)},
+        ],
+        "temperature": 0,
+    }
+    if settings.openrouter_force_online:
+        body["plugins"] = [{"id": "web", "max_results": settings.openrouter_web_max_results}]
+
+    client = httpx.Client(timeout=timeout_seconds)
+    try:
+        response = client.post(
+            f"{settings.openrouter_base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {settings.openrouter_api_key}"},
+            json=body,
+        )
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"]
+        parsed = None
+        try:
+            parsed = json.loads(content)
+        except Exception:
+            # Strip fluff/code fences and parse the first JSON object only.
+            match = re.search(r"\{.*\}", content, re.DOTALL)
+            if match:
+                parsed = json.loads(match.group(0))
+        if not isinstance(parsed, dict):
+            return None, None
+        lat = float(parsed.get("lat"))
+        lon = float(parsed.get("lon"))
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            return None, None
+        return lat, lon
+    except Exception:
+        return None, None
+    finally:
+        client.close()
 
 
 def build_map_snapshot(conn: sqlite3.Connection, focal_author_id: str, force_refresh: bool = False) -> Dict[str, Any]:
@@ -503,6 +632,10 @@ def build_map_snapshot(conn: sqlite3.Connection, focal_author_id: str, force_ref
 
     blobs: Dict[str, Dict[str, Any]] = {}
     total_placements = 0
+    geocode_attempts = 0
+    known_institution_coords: Dict[str, Tuple[Optional[float], Optional[float]]] = {}
+    for row in conn.execute("SELECT institution_key, lat, lon FROM institution").fetchall():
+        known_institution_coords[row["institution_key"]] = (row["lat"], row["lon"])
     now = utc_now_iso()
     conn.execute("DELETE FROM collaborator_placement WHERE focal_author_id = ?", (canonical_focal,))
     conn.execute("DELETE FROM unplaced_collaborators WHERE focal_author_id = ?", (canonical_focal,))
@@ -568,12 +701,80 @@ def build_map_snapshot(conn: sqlite3.Connection, focal_author_id: str, force_ref
         fallback_country_code, fallback_country_name = infer_country_for_institution(primary_candidate.institution_name)
         country_code = primary_candidate.country_code or fallback_country_code
         country_name = primary_candidate.country_name or fallback_country_name
-        lat = primary_candidate.lat
-        lon = primary_candidate.lon
-        if lat is None or lon is None:
-            geocoded_lat, geocoded_lon = geocode_institution_once(primary_candidate.institution_name, country_name)
+        fallback_city_name: Optional[str] = None
+        fallback_city_lat: Optional[float] = None
+        fallback_city_lon: Optional[float] = None
+        coordinate_basis = "institution"
+        existing_lat, existing_lon = known_institution_coords.get(key, (None, None))
+        lat = primary_candidate.lat if primary_candidate.lat is not None else existing_lat
+        lon = primary_candidate.lon if primary_candidate.lon is not None else existing_lon
+        if (
+            (lat is None or lon is None)
+            and settings.geocode_enabled
+            and geocode_attempts < settings.geocode_max_lookups_per_snapshot
+        ):
+            local_lat, local_lon, source = infer_local_coordinates(primary_candidate.institution_name, country_code)
+            lat = lat if lat is not None else local_lat
+            lon = lon if lon is not None else local_lon
+            if source == "local_city_csv":
+                city_name, city_lat, city_lon, _ = infer_city_for_institution(
+                    primary_candidate.institution_name,
+                    country_code,
+                )
+                fallback_city_name = city_name
+                fallback_city_lat = city_lat
+                fallback_city_lon = city_lon
+                if lat is not None and lon is not None:
+                    coordinate_basis = "city_fallback"
+
+        if (
+            (lat is None or lon is None)
+            and settings.geocode_enabled
+            and geocode_attempts < settings.geocode_max_lookups_per_snapshot
+        ):
+            geocode_attempts += 1
+            llm_lat, llm_lon = llm_geocode_institution_once(
+                primary_candidate.institution_name,
+                country_name,
+                timeout_seconds=settings.llm_geocode_timeout_seconds,
+            )
+            lat = lat if lat is not None else llm_lat
+            lon = lon if lon is not None else llm_lon
+            if lat is not None and lon is not None and primary_candidate.institution_name:
+                append_coordinate_cache_row(
+                    institution_name=primary_candidate.institution_name,
+                    country_code=country_code,
+                    lat=lat,
+                    lon=lon,
+                    source="openrouter_online",
+                )
+                coordinate_basis = "llm_online"
+
+        if (
+            (lat is None or lon is None)
+            and settings.geocode_enabled
+            and geocode_attempts < settings.geocode_max_lookups_per_snapshot
+        ):
+            geocode_attempts += 1
+            geocoded_lat, geocoded_lon = geocode_institution_once(
+                primary_candidate.institution_name,
+                country_name,
+                timeout_seconds=settings.geocode_timeout_seconds,
+            )
             lat = lat if lat is not None else geocoded_lat
             lon = lon if lon is not None else geocoded_lon
+            if lat is not None and lon is not None and primary_candidate.institution_name:
+                append_coordinate_cache_row(
+                    institution_name=primary_candidate.institution_name,
+                    country_code=country_code,
+                    lat=lat,
+                    lon=lon,
+                    source="nominatim",
+                )
+                coordinate_basis = "nominatim"
+        known_institution_coords[key] = (lat, lon)
+        if lat is None or lon is None:
+            coordinate_basis = "unknown"
 
         conn.execute(
             """
@@ -645,6 +846,10 @@ def build_map_snapshot(conn: sqlite3.Connection, focal_author_id: str, force_ref
                 "country_name": country_name,
                 "lat": lat,
                 "lon": lon,
+                "city_name": fallback_city_name,
+                "city_lat": fallback_city_lat,
+                "city_lon": fallback_city_lon,
+                "coordinate_basis": coordinate_basis,
                 "people": [],
                 "max_last_collaboration_year": agg.last_collaboration_year,
                 "min_last_collaboration_year": agg.last_collaboration_year,

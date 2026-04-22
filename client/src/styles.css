@@ -38,6 +38,14 @@ body {
   position: relative;
 }
 
+.search-wrap.search-locked {
+  opacity: 0.7;
+}
+
+.search-wrap.search-locked .suggestions {
+  pointer-events: none;
+}
+
 .search-wrap input {
   width: 100%;
   padding: 0.8rem;
@@ -271,6 +279,80 @@ body {
   margin: 0.5rem 0 0;
   color: #0f766e;
   font-weight: 700;
+}
+
+.loading-banner {
+  margin-top: 0.55rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: #0f172a;
+  background: #f0fdfa;
+  border: 1px solid #99f6e4;
+  border-radius: 999px;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.9rem;
+}
+
+.spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid #99f6e4;
+  border-top-color: #0f766e;
+  border-radius: 50%;
+  display: inline-block;
+  animation: spin 0.8s linear infinite;
+}
+
+.spinner.large {
+  width: 20px;
+  height: 20px;
+  border-width: 3px;
+}
+
+.map-panel {
+  position: relative;
+}
+
+.map-loading-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 500;
+  background: rgba(255, 255, 255, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.map-loading-overlay span:last-child,
+.map-loading-overlay .spinner.large {
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid #cbd5e1;
+  border-radius: 0.7rem;
+  padding: 0.6rem 0.8rem;
+}
+
+.map-loading-overlay {
+  gap: 0.6rem;
+}
+
+.map-loading-overlay span:last-child {
+  font-weight: 700;
+}
+
+.map-loading-overlay .spinner.large {
+  padding: 0.5rem;
+}
+
+.map-loading-overlay {
+  align-items: center;
+  pointer-events: all;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @media (max-width: 1024px) {
