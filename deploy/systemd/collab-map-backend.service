@@ -1,0 +1,16 @@
+[Unit]
+Description=Collaborator Map FastAPI backend
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/opt/collab-map
+EnvironmentFile=/opt/collab-map/server/.env
+ExecStart=/opt/miniconda3/envs/collab/bin/python -m uvicorn server.app.main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+

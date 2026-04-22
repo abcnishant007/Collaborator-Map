@@ -1,0 +1,2 @@
+"""Collaboration atlas backend package."""
+

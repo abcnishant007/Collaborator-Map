@@ -1,0 +1,13 @@
+colab.write-up.dev {
+  encode zstd gzip
+
+  @admin path /api/admin/*
+  respond @admin 403
+
+  @api path /api/*
+  reverse_proxy @api 127.0.0.1:8000
+
+  root * /var/www/collab-map/client/dist
+  try_files {path} /index.html
+  file_server
+}
