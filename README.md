@@ -105,8 +105,8 @@ Port conflict behavior:
 - `GET /api/map/{focal_author_id}/static.svg`
 - `GET /api/blob/{focal_author_id}/{institution_key}`
 - `GET /api/collaborator/{focal_author_id}/{collaborator_author_id}`
-- `POST /api/focal/{focal_author_id}/refresh-affiliation`
-- `POST /api/collaborator/{collaborator_author_id}/enrich-links`
+- `POST /api/focal/refresh-affiliation?focal_author_id=...`
+- `POST /api/collaborator/enrich-links?collaborator_author_id=...`
 - `GET /api/admin/debug/normalization`
 - `GET /api/admin/config` (read-only, server-local only)
 

@@ -30,7 +30,7 @@ export function fetchMapSnapshot(openalexAuthorId, forceRefresh = false) {
 }
 
 export function refreshFocalAffiliation(openalexAuthorId) {
-  return request(`/api/focal/${encodeURIComponent(openalexAuthorId)}/refresh-affiliation`, {
+  return request(`/api/focal/refresh-affiliation?focal_author_id=${encodeURIComponent(openalexAuthorId)}`, {
     method: "POST",
   });
 }

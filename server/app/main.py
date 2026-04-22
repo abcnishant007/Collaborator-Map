@@ -156,15 +156,15 @@ def api_collaborator_details(
     return details
 
 
-@app.post("/api/focal/{focal_author_id}/refresh-affiliation")
-def api_refresh_focal_affiliation(focal_author_id: str) -> Dict[str, Any]:
+@app.post("/api/focal/refresh-affiliation")
+def api_refresh_focal_affiliation(focal_author_id: str = Query(...)) -> Dict[str, Any]:
     with get_conn() as conn:
         refreshed = refresh_focal_affiliation(conn, focal_author_id)
     return refreshed
 
 
-@app.post("/api/collaborator/{collaborator_author_id}/enrich-links")
-def api_enrich_collaborator_links(collaborator_author_id: str) -> Dict[str, Any]:
+@app.post("/api/collaborator/enrich-links")
+def api_enrich_collaborator_links(collaborator_author_id: str = Query(...)) -> Dict[str, Any]:
     with get_conn() as conn:
         details = enrich_collaborator_links(conn, collaborator_author_id)
     return details
