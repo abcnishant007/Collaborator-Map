@@ -36,6 +36,11 @@ Required env vars are already listed in both files:
 - `GEOCODE_MAX_LOOKUPS_PER_SNAPSHOT`
 - `LLM_GEOCODE_ENABLED`
 - `LLM_GEOCODE_TIMEOUT_SECONDS`
+- `OPENROUTER_CHEAP_MODEL` (low-cost model for unplaced collaborator online resolution)
+- `UNPLACED_ONLINE_RESOLUTION_ENABLED`
+- `UNPLACED_ONLINE_MAX_PER_SNAPSHOT`
+- `UNPLACED_ONLINE_MIN_CONFIDENCE`
+- `UNPLACED_ONLINE_TIMEOUT_SECONDS`
 - `DATABASE_URL`
 - cache + refresh TTL vars
 
@@ -194,6 +199,12 @@ Lookup order for missing institution coordinates:
 6. network geocoding (bounded timeout and per-snapshot cap)
 
 When step 5 or 6 succeeds, the institution coordinate is appended to `more_data/institution_coordinate_cache.csv` so future runs can resolve it locally without another network lookup.
+
+Unplaced collaborator reduction:
+
+- For collaborators missing institution on joint-paper records, the backend can run online LLM resolution (using `OPENROUTER_CHEAP_MODEL` with web search enabled) to infer a likely institution.
+- Strict JSON is required; placement is only applied when confidence passes `UNPLACED_ONLINE_MIN_CONFIDENCE`.
+- Resolutions are cached in `affiliation_resolution` to reduce repeat cost.
 
 ## AWS deployment steps (EC2)
 

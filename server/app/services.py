@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
-from .config import get_settings, resolve_openrouter_model
+from .config import get_settings, resolve_openrouter_cheap_model, resolve_openrouter_model
 from .db import utc_now_iso
 from .normalization import normalize_institution_key, normalize_text
 from .openalex import OpenAlexClient, canonical_author_id
@@ -546,6 +546,110 @@ def llm_geocode_institution_once(
         client.close()
 
 
+def _parse_loose_json_object(content: str) -> Optional[dict]:
+    try:
+        parsed = json.loads(content)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+    match = re.search(r"\{.*\}", content or "", re.DOTALL)
+    if not match:
+        return None
+    try:
+        parsed = json.loads(match.group(0))
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        return None
+    return None
+
+
+def llm_infer_unplaced_institution(
+    collaborator_name: str,
+    collaborator_openalex_id: str,
+    focal_author_name: Optional[str],
+    timeout_seconds: float = 12.0,
+) -> Optional[Dict[str, Any]]:
+    settings = get_settings()
+    if not settings.openrouter_api_key or not settings.unplaced_online_resolution_enabled:
+        return None
+    model = resolve_openrouter_cheap_model(settings)
+    if not model:
+        return None
+    body = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Identify the scholar's most likely institution for map placement fallback. "
+                    "Use web evidence including Google Scholar/university profile/ORCID/OpenAlex where possible. "
+                    "Return STRICT JSON ONLY with keys: institution_name, country_code, confidence, evidence_urls, reason_short. "
+                    "confidence must be 0..1. If unsure, set institution_name null and confidence <= 0.4."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "collaborator_name": collaborator_name,
+                        "collaborator_openalex_id": collaborator_openalex_id,
+                        "focal_author_name": focal_author_name,
+                    }
+                ),
+            },
+        ],
+        "temperature": 0,
+    }
+    if settings.openrouter_force_online:
+        body["plugins"] = [{"id": "web", "max_results": settings.openrouter_web_max_results}]
+
+    client = httpx.Client(timeout=timeout_seconds)
+    try:
+        response = client.post(
+            f"{settings.openrouter_base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {settings.openrouter_api_key}"},
+            json=body,
+        )
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"]
+        parsed = _parse_loose_json_object(content)
+        if not parsed:
+            return None
+        institution_name = parsed.get("institution_name")
+        if institution_name is not None:
+            institution_name = str(institution_name).strip()
+            if not institution_name:
+                institution_name = None
+        country_code = parsed.get("country_code")
+        if country_code is not None:
+            country_code = str(country_code).strip().upper()[:2]
+            if not country_code:
+                country_code = None
+        try:
+            confidence = float(parsed.get("confidence"))
+        except Exception:
+            confidence = 0.0
+        confidence = max(0.0, min(1.0, confidence))
+        evidence_urls = parsed.get("evidence_urls")
+        if not isinstance(evidence_urls, list):
+            evidence_urls = []
+        evidence_urls = [str(url) for url in evidence_urls[:5] if isinstance(url, (str, bytes))]
+        reason_short = str(parsed.get("reason_short") or "")[:200]
+        return {
+            "institution_name": institution_name,
+            "country_code": country_code,
+            "confidence": confidence,
+            "evidence_urls": evidence_urls,
+            "reason_short": reason_short,
+        }
+    except Exception:
+        return None
+    finally:
+        client.close()
+
+
 def build_map_snapshot(conn: sqlite3.Connection, focal_author_id: str, force_refresh: bool = False) -> Dict[str, Any]:
     settings = get_settings()
     canonical_focal = canonical_author_id(focal_author_id)
@@ -568,6 +672,8 @@ def build_map_snapshot(conn: sqlite3.Connection, focal_author_id: str, force_ref
     collaborators: Dict[str, CollaboratorAggregate] = {}
     unplaced: List[Dict[str, Any]] = []
     focal_found_in_works = 0
+    unplaced_online_attempts = 0
+    focal_display_name = focal_author.get("display_name")
 
     for work in works:
         authorships = work.get("authorships") or []
@@ -669,6 +775,183 @@ def build_map_snapshot(conn: sqlite3.Connection, focal_author_id: str, force_ref
         link_info = fetch_person_links(conn, collaborator_id)
 
         if not primary_candidate:
+            fallback_institution_name: Optional[str] = None
+            fallback_country_code: Optional[str] = None
+            fallback_confidence: float = 0.0
+            evidence_urls: List[str] = []
+
+            cached_resolution = conn.execute(
+                """
+                SELECT adjudication_json, confidence
+                FROM affiliation_resolution
+                WHERE openalex_author_id = ?
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (collaborator_id,),
+            ).fetchone()
+            if cached_resolution:
+                try:
+                    parsed = json.loads(cached_resolution["adjudication_json"])
+                except Exception:
+                    parsed = {}
+                fallback_institution_name = parsed.get("institution_name") or parsed.get("primary_affiliation")
+                fallback_country_code = parsed.get("country_code")
+                fallback_confidence = float(cached_resolution["confidence"] or 0.0)
+                evidence_urls = parsed.get("evidence_urls") or []
+
+            should_try_online = (
+                not fallback_institution_name
+                and settings.unplaced_online_resolution_enabled
+                and settings.openrouter_api_key
+                and force_refresh
+                and unplaced_online_attempts < settings.unplaced_online_max_per_snapshot
+            )
+            if should_try_online:
+                unplaced_online_attempts += 1
+                inferred = llm_infer_unplaced_institution(
+                    collaborator_name=agg.display_name,
+                    collaborator_openalex_id=collaborator_id,
+                    focal_author_name=focal_display_name,
+                    timeout_seconds=settings.unplaced_online_timeout_seconds,
+                )
+                if inferred:
+                    fallback_institution_name = inferred.get("institution_name")
+                    fallback_country_code = inferred.get("country_code")
+                    fallback_confidence = float(inferred.get("confidence") or 0.0)
+                    evidence_urls = inferred.get("evidence_urls") or []
+                    now_resolution = utc_now_iso()
+                    conn.execute(
+                        """
+                        INSERT INTO affiliation_resolution(
+                            openalex_author_id, evidence_json, adjudication_json, confidence, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            collaborator_id,
+                            json.dumps({"evidence_urls": evidence_urls}),
+                            json.dumps(inferred),
+                            fallback_confidence,
+                            now_resolution,
+                            now_resolution,
+                        ),
+                    )
+
+            if fallback_institution_name and fallback_confidence >= settings.unplaced_online_min_confidence:
+                _, inferred_country_name = infer_country_for_institution(fallback_institution_name)
+                key = normalize_institution_key(None, fallback_institution_name)
+                if key:
+                    total_placements += 1
+                    local_lat, local_lon, _src = infer_local_coordinates(fallback_institution_name, fallback_country_code)
+                    lat, lon = local_lat, local_lon
+                    if (lat is None or lon is None) and settings.llm_geocode_enabled:
+                        llm_lat, llm_lon = llm_geocode_institution_once(
+                            fallback_institution_name,
+                            inferred_country_name,
+                            timeout_seconds=settings.llm_geocode_timeout_seconds,
+                        )
+                        lat = lat if lat is not None else llm_lat
+                        lon = lon if lon is not None else llm_lon
+                    if (lat is None or lon is None) and settings.geocode_enabled:
+                        geo_lat, geo_lon = geocode_institution_once(
+                            fallback_institution_name,
+                            inferred_country_name,
+                            timeout_seconds=settings.geocode_timeout_seconds,
+                        )
+                        lat = lat if lat is not None else geo_lat
+                        lon = lon if lon is not None else geo_lon
+
+                    conn.execute(
+                        """
+                        INSERT INTO institution(
+                            institution_key, institution_id, institution_name, country_code, country_name,
+                            lat, lon, normalization_source, alias_json, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(institution_key) DO UPDATE SET
+                            institution_name=excluded.institution_name,
+                            country_code=COALESCE(excluded.country_code, institution.country_code),
+                            country_name=COALESCE(excluded.country_name, institution.country_name),
+                            lat=COALESCE(excluded.lat, institution.lat),
+                            lon=COALESCE(excluded.lon, institution.lon),
+                            updated_at=excluded.updated_at
+                        """,
+                        (
+                            key,
+                            None,
+                            fallback_institution_name,
+                            fallback_country_code,
+                            inferred_country_name,
+                            lat,
+                            lon,
+                            "llm_online_unplaced",
+                            json.dumps([]),
+                            now,
+                        ),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO collaborator_placement(
+                            focal_author_id, collaborator_author_id, institution_key, placement_basis,
+                            source_work_id, source_year, raw_institutions_json, is_joint_position,
+                            primary_is_super_clear, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            canonical_focal,
+                            collaborator_id,
+                            key,
+                            "llm_online_unplaced",
+                            None,
+                            agg.last_collaboration_year,
+                            json.dumps({"evidence_urls": evidence_urls}),
+                            0,
+                            0,
+                            now,
+                        ),
+                    )
+                    person_row = {
+                        "openalex_author_id": collaborator_id,
+                        "display_name": agg.display_name,
+                        "joint_paper_count": agg.joint_paper_count,
+                        "first_collaboration_year": agg.first_collaboration_year,
+                        "last_collaboration_year": agg.last_collaboration_year,
+                        "is_joint_position": False,
+                        "primary_is_super_clear": False,
+                        "preferred_url": link_info["preferred_url"],
+                        "available_links": link_info["available_links"],
+                    }
+                    if key not in blobs:
+                        blobs[key] = {
+                            "institution_key": key,
+                            "institution_name": fallback_institution_name,
+                            "country_code": fallback_country_code,
+                            "country_name": inferred_country_name,
+                            "lat": lat,
+                            "lon": lon,
+                            "city_name": None,
+                            "city_lat": None,
+                            "city_lon": None,
+                            "coordinate_basis": "llm_online_unplaced",
+                            "people": [],
+                            "max_last_collaboration_year": agg.last_collaboration_year,
+                            "min_last_collaboration_year": agg.last_collaboration_year,
+                        }
+                    blobs[key]["people"].append(person_row)
+                    if agg.last_collaboration_year is not None:
+                        current_max = blobs[key]["max_last_collaboration_year"]
+                        current_min = blobs[key]["min_last_collaboration_year"]
+                        blobs[key]["max_last_collaboration_year"] = (
+                            agg.last_collaboration_year
+                            if current_max is None
+                            else max(current_max, agg.last_collaboration_year)
+                        )
+                        blobs[key]["min_last_collaboration_year"] = (
+                            agg.last_collaboration_year
+                            if current_min is None
+                            else min(current_min, agg.last_collaboration_year)
+                        )
+                    continue
+
             unplaced_row = {
                 "openalex_author_id": collaborator_id,
                 "display_name": agg.display_name,
